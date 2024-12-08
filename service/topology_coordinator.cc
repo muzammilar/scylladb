@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include <chrono>
 #include <fmt/ranges.h>
 
 #include <seastar/core/abort_source.hh>
@@ -26,11 +27,13 @@
 #include "dht/boot_strapper.hh"
 #include "gms/gossiper.hh"
 #include "gms/feature_service.hh"
+#include "locator/host_id.hh"
 #include "locator/tablets.hh"
 #include "locator/token_metadata.hh"
 #include "locator/network_topology_strategy.hh"
 #include "message/messaging_service.hh"
 #include "mutation/async_utils.hh"
+#include "raft/raft.hh"
 #include "replica/database.hh"
 #include "replica/tablet_mutation_builder.hh"
 #include "replica/tablets.hh"
@@ -82,6 +85,18 @@ future<> wait_for_gossiper(raft::server_id id, const gms::gossiper& g, abort_sou
         co_await sleep_abortable(std::chrono::milliseconds(5), as);
     }
 }
+
+namespace {
+// Doesn't throw error on absence of values.
+sstring get_application_state_gently(const gms::application_state_map& epmap, gms::application_state app_state) {
+    const auto it = epmap.find(app_state);
+    if (it == epmap.end()) {
+        return sstring{};
+    }
+    // it's versioned_value::value(), not std::optional::value() - it does not throw
+    return it->second.value();
+}
+} // namespace
 
 class topology_coordinator : public endpoint_lifecycle_subscriber {
     sharded<db::system_distributed_keyspace>& _sys_dist_ks;
@@ -722,6 +737,78 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 } catch (...) {
                     rtlogger.debug("CDC generation publisher: sleep failed: {}", std::current_exception());
                 }
+            }
+            co_await coroutine::maybe_yield();
+        }
+    }
+
+    // If a node crashes after initiating gossip and before joining group0, it becomes orphan and
+    // remains in gossip. This background fiber periodically checks for such nodes and purges those
+    // entries from gossiper by committing the node as left in raft.
+    future<> gossiper_orphan_remover_fiber() {
+        rtlogger.debug("start gossiper orphan remover fiber");
+        bool do_speedup_fiber = false;
+        co_await utils::get_local_injector().inject("fast_orphan_removal_fiber", [&](auto& handler) -> future<> {
+            do_speedup_fiber = true;
+            // While testing, orphan ip is introduced, and its presence is captured. Wait is added before remover thread so that the presence of orphan ip is
+            // confirmed and the difference of gossiper ips before and after this thread application can be easily asserted.
+            return handler.wait_for_message(db::timeout_clock::now() + std::chrono::minutes(5));
+        });
+        while (!_as.abort_requested()) {
+            try {
+                auto guard = co_await start_operation();
+                std::vector<canonical_mutation> updates;
+                int32_t timeout = 60;
+                co_await utils::get_local_injector().inject("speedup_orphan_removal", [&](auto& handler) -> future<> {
+                    // Removes all unjoined nodes. Just for testing purposes.
+                    timeout = 0;
+                    co_return;
+                });
+                std::string reason = ::format("Ban the orphan nodes in group0. Orphan nodes HostId/IP:");
+                _gossiper.for_each_endpoint_state([&](const gms::inet_address& addr, const gms::endpoint_state& eps) -> void {
+                    // Since generation is in seconds unit, converting current time to seconds eases comparison computations.
+                    auto current_timestamp =
+                            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+                    auto generation = eps.get_heart_beat_state().get_generation().value();
+                    auto host_id = eps.get_host_id();
+                    if (current_timestamp - generation > timeout && !_topo_sm._topology.contains(raft::server_id{host_id.id}) && !_gossiper.is_alive(addr)) {
+                        topology_mutation_builder builder(guard.write_timestamp());
+                        // This topology mutation moves a node to left state and bans it. Hence, the value of below fields are not useful.
+                        // The dummy_value used for few fields indicates the trivialness of this row entry, and is used to detect this special case.
+                        static constexpr uint32_t dummy_value = 0;
+                        builder.with_node(raft::server_id{host_id.id})
+                                .set("datacenter", get_application_state_gently(eps.get_application_state_map(), gms::application_state::DC))
+                                .set("rack", get_application_state_gently(eps.get_application_state_map(), gms::application_state::RACK))
+                                .set("release_version", get_application_state_gently(eps.get_application_state_map(), gms::application_state::RELEASE_VERSION))
+                                .set("num_tokens", dummy_value)
+                                .set("tokens_string", sstring{})
+                                .set("shard_count", dummy_value)
+                                .set("ignore_msb", dummy_value)
+                                .set("request_id", dummy_value)
+                                .set("cleanup_status", cleanup_status::clean)
+                                .set("node_state", node_state::left);
+                        reason.append(::format(" {}/{},", host_id, addr));
+                        updates.push_back({builder.build()});
+                    }
+                });
+                if (!updates.empty()) {
+                    co_await update_topology_state(std::move(guard), std::move(updates), reason);
+                }
+
+            } catch (raft::request_aborted&) {
+                rtlogger.debug("gossiper orphan remover fiber aborted");
+            } catch (seastar::abort_requested_exception) {
+                rtlogger.debug("gossiper orphan remover fiber aborted");
+            } catch (group0_concurrent_modification&) {
+            } catch (term_changed_error&) {
+                rtlogger.debug("gossiper orphan remover fiber notices term change {} -> {}", _term, _raft.get_current_term());
+            } catch (...) {
+                rtlogger.error("gossiper orphan remover fiber got error {}", std::current_exception());
+            }
+            try {
+                co_await seastar::sleep_abortable(do_speedup_fiber ? std::chrono::milliseconds(1) : std::chrono::seconds(10), _as);
+            } catch (...) {
+                rtlogger.debug("gossiper orphan remover: sleep failed: {}", std::current_exception());
             }
             co_await coroutine::maybe_yield();
         }
@@ -1450,7 +1537,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
         co_await update_topology_state(std::move(guard), std::move(updates), "Finished tablet migration");
     }
 
-    future<> handle_tablet_split_finalization(group0_guard g) {
+    future<> handle_tablet_resize_finalization(group0_guard g) {
         // Executes a global barrier to guarantee that any process (e.g. repair) holding stale version
         // of token metadata will complete before we update topology.
         auto guard = co_await global_tablet_token_metadata_barrier(std::move(g));
@@ -1463,7 +1550,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
 
         for (auto& table_id : plan.resize_plan().finalize_resize) {
             auto s = _db.find_schema(table_id);
-            auto new_tablet_map = co_await _tablet_allocator.split_tablets(tm, table_id);
+            auto new_tablet_map = co_await _tablet_allocator.resize_tablets(tm, table_id);
             updates.emplace_back(co_await replica::tablet_map_to_mutation(
                 new_tablet_map,
                 table_id,
@@ -2081,8 +2168,8 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             case topology::transition_state::tablet_migration:
                 co_await handle_tablet_migration(std::move(guard), false);
                 break;
-            case topology::transition_state::tablet_split_finalization:
-                co_await handle_tablet_split_finalization(std::move(guard));
+            case topology::transition_state::tablet_resize_finalization:
+                co_await handle_tablet_resize_finalization(std::move(guard));
                 break;
             case topology::transition_state::left_token_ring: {
                 auto node = get_node_to_work_on(std::move(guard));
@@ -2529,8 +2616,8 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
     // Returns true if the state machine was transitioned into tablet migration path.
     future<bool> maybe_start_tablet_migration(group0_guard);
 
-    // Returns true if the state machine was transitioned into tablet split finalization path.
-    future<bool> maybe_start_tablet_split_finalization(group0_guard, const table_resize_plan& plan);
+    // Returns true if the state machine was transitioned into tablet resize finalization path.
+    future<bool> maybe_start_tablet_resize_finalization(group0_guard, const table_resize_plan& plan);
 
     future<locator::load_stats> refresh_tablet_load_stats();
     future<> start_tablet_load_stats_refresher();
@@ -2578,7 +2665,7 @@ public:
 
     virtual void on_join_cluster(const gms::inet_address& endpoint) {}
     virtual void on_leave_cluster(const gms::inet_address& endpoint, const locator::host_id& hid) {};
-    virtual void on_up(const gms::inet_address& endpoint) {};
+    virtual void on_up(const gms::inet_address& endpoint) { _topo_sm.event.broadcast(); };
     virtual void on_down(const gms::inet_address& endpoint) { _topo_sm.event.broadcast(); };
 };
 
@@ -2588,12 +2675,19 @@ future<std::optional<group0_guard>> topology_coordinator::maybe_migrate_system_t
     // we upgrade to v2.
     const auto view_builder_version = co_await _sys_ks.get_view_builder_version();
     if (view_builder_version == db::system_keyspace::view_builder_version_t::v1 && _feature_service.view_build_status_on_group0) {
+        rtlogger.info("Migrating view_builder to v1_5");
         auto tmptr = get_token_metadata_ptr();
         co_await db::view::view_builder::migrate_to_v1_5(tmptr, _sys_ks, _sys_ks.query_processor(), _group0.client(), _as, std::move(guard));
         co_return std::nullopt;
     }
 
     if (view_builder_version == db::system_keyspace::view_builder_version_t::v1_5) {
+        if (!get_dead_nodes().empty()) {
+            rtlogger.debug("Not all nodes are alive. Skipping system table migration until there are any dead nodes.");
+            co_return std::move(guard);
+        }
+
+        rtlogger.info("Migrating view_builder to v2");
         // do a barrier to ensure all nodes applied the migration to v1_5 before we continue to v2
         guard = co_await exec_global_command(std::move(guard), raft_topology_cmd::command::barrier, {_raft.id()});
 
@@ -2623,10 +2717,10 @@ future<bool> topology_coordinator::maybe_start_tablet_migration(group0_guard gua
 
     co_await generate_migration_updates(updates, guard, plan);
 
-    // We only want to consider transitioning into tablet split finalization path, if there's no other work
+    // We only want to consider transitioning into tablet resize finalization path, if there's no other work
     // to be done (e.g. start migration or/and emit split decision).
     if (updates.empty()) {
-        co_return co_await maybe_start_tablet_split_finalization(std::move(guard), plan.resize_plan());
+        co_return co_await maybe_start_tablet_resize_finalization(std::move(guard), plan.resize_plan());
     }
 
     updates.emplace_back(
@@ -2639,7 +2733,7 @@ future<bool> topology_coordinator::maybe_start_tablet_migration(group0_guard gua
     co_return true;
 }
 
-future<bool> topology_coordinator::maybe_start_tablet_split_finalization(group0_guard guard, const table_resize_plan& plan) {
+future<bool> topology_coordinator::maybe_start_tablet_resize_finalization(group0_guard guard, const table_resize_plan& plan) {
     if (plan.finalize_resize.empty()) {
         co_return false;
     }
@@ -2651,11 +2745,11 @@ future<bool> topology_coordinator::maybe_start_tablet_split_finalization(group0_
 
     updates.emplace_back(
         topology_mutation_builder(guard.write_timestamp())
-            .set_transition_state(topology::transition_state::tablet_split_finalization)
+            .set_transition_state(topology::transition_state::tablet_resize_finalization)
             .set_version(_topo_sm._topology.version + 1)
             .build());
 
-    co_await update_topology_state(std::move(guard), std::move(updates), "Started tablet split finalization");
+    co_await update_topology_state(std::move(guard), std::move(updates), "Started tablet resize finalization");
     co_return true;
 }
 
@@ -3061,6 +3155,7 @@ future<> topology_coordinator::run() {
     co_await fence_previous_coordinator();
     auto cdc_generation_publisher = cdc_generation_publisher_fiber();
     auto tablet_load_stats_refresher = start_tablet_load_stats_refresher();
+    auto gossiper_orphan_remover = gossiper_orphan_remover_fiber();
 
     while (!_as.abort_requested()) {
         bool sleep = false;
@@ -3099,6 +3194,7 @@ future<> topology_coordinator::run() {
     co_await _async_gate.close();
     co_await std::move(tablet_load_stats_refresher);
     co_await std::move(cdc_generation_publisher);
+    co_await std::move(gossiper_orphan_remover);
 }
 
 future<> topology_coordinator::stop() {
