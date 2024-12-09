@@ -688,6 +688,14 @@ A table supports the following options:
      - simple
      - 0
      - Flush the memtables associated with this table every ``memtable_flush_period_in_ms`` milliseconds. When set to ``0``, periodic flush is disabled. Cannot set to values lower than ``60000`` (1 minute). Default: ``0``.
+   * - ``min_index_interval``
+     - simple
+     - 128
+     - Minimum gap between summary entries: ScyllaDB will create summary entries with at least this amount of partitions between them. Controls the maximums density of the summary.
+   * - ``max_index_interval``
+     - simple
+     - 2048
+     - Not implemented (option value is ignored).
    * - ``compaction``
      - map
      - see below
@@ -767,14 +775,10 @@ available:
                                            defines the size (in KB) of the block. Bigger values may improve the
                                            compression rate, but increases the minimum size of data to be read from disk
                                            for a read. Allowed values are powers of two between 1 and 128.
+ ``crc_check_chance``      1.0             Not implemented (option value is ignored).
 ========================= =============== =============================================================================
 
-.. ``crc_check_chance``      1.0             When compression is enabled, each compressed block includes a checksum of
-..                                           that block for the purpose of detecting disk bitrot and avoiding the
-..                                           propagation of corruption to other replicas. This option defines the
-..                                           probability with which those checksums are checked during read. By default
-..                                           they are always checked. Set to 0 to disable checksum checking and to 0.5 for
-..                                           instance to check them every other read   |
+.. crc_check_chance was promoted to a top-level table option since Cassandra 3.0, but we didn't do this.
 
 For example, to enable compression:
 
