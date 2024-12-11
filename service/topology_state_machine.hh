@@ -22,6 +22,10 @@
 #include "service/session.hh"
 #include "mutation/canonical_mutation.hh"
 
+namespace db {
+    class system_keyspace;
+}
+
 namespace service {
 
 enum class node_state: uint16_t {
@@ -72,6 +76,7 @@ enum class global_topology_request: uint16_t {
     new_cdc_generation,
     cleanup,
     keyspace_rf_change,
+    truncate_table,
 };
 
 struct ring_slice {
@@ -110,7 +115,7 @@ struct topology {
         write_both_read_old,
         write_both_read_new,
         tablet_migration,
-        tablet_split_finalization,
+        tablet_resize_finalization,
         left_token_ring,
         rollback_to_normal,
     };
@@ -231,6 +236,7 @@ struct topology_state_machine {
     size_t reload_count = 0;
 
     future<> await_not_busy();
+    future<sstring> wait_for_request_completion(db::system_keyspace& sys_ks, utils::UUID id, bool require_entry);
 };
 
 // Raft leader uses this command to drive bootstrap process on other nodes

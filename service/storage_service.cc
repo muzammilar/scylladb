@@ -13,6 +13,7 @@
 #include "compaction/task_manager_module.hh"
 #include "gc_clock.hh"
 #include "raft/raft.hh"
+#include <seastar/core/sleep.hh>
 #include "service/qos/raft_service_level_distributed_data_accessor.hh"
 #include "service/qos/service_level_controller.hh"
 #include "service/qos/standard_service_level_distributed_data_accessor.hh"
@@ -20,6 +21,7 @@
 #include "service/topology_guard.hh"
 #include "service/session.hh"
 #include "dht/boot_strapper.hh"
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <fmt/ranges.h>
@@ -109,6 +111,8 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/join.hpp>
+#include <stdexcept>
+#include <unistd.h>
 
 using token = dht::token;
 using UUID = utils::UUID;
@@ -689,7 +693,7 @@ future<> storage_service::topology_state_load(state_change_hint hint) {
     co_await _sl_controller.invoke_on_all([this] (qos::service_level_controller& sl_controller) {
         sl_controller.upgrade_to_v2(_qp, _group0->client());
     });
-    co_await update_service_levels_cache(qos::update_both_cache_levels::yes);
+    co_await update_service_levels_cache(qos::update_both_cache_levels::yes, qos::query_context::group0);
 
     // the view_builder is migrated to v2 in view_builder::migrate_to_v2.
     // it writes a v2 version mutation as topology_change, then we get here
@@ -739,7 +743,7 @@ future<> storage_service::topology_state_load(state_change_hint hint) {
                     [[fallthrough]];
                 case topology::transition_state::tablet_migration:
                     [[fallthrough]];
-                case topology::transition_state::tablet_split_finalization:
+                case topology::transition_state::tablet_resize_finalization:
                     [[fallthrough]];
                 case topology::transition_state::commit_cdc_generation:
                     [[fallthrough]];
@@ -907,9 +911,9 @@ future<> storage_service::merge_topology_snapshot(raft_snapshot snp) {
     co_await _db.local().apply(freeze(muts), db::no_timeout);
 }
 
-future<> storage_service::update_service_levels_cache(qos::update_both_cache_levels update_only_effective_cache) {
+future<> storage_service::update_service_levels_cache(qos::update_both_cache_levels update_only_effective_cache, qos::query_context ctx) {
     SCYLLA_ASSERT(this_shard_id() == 0);
-    co_await _sl_controller.local().update_cache(update_only_effective_cache);
+    co_await _sl_controller.local().update_cache(update_only_effective_cache, ctx);
 }
 
 // Moves the coroutine lambda onto the heap and extends its
@@ -1264,6 +1268,11 @@ public:
     future<> pre_server_start(const group0_info& g0_info) override {
         rtlogger.info("join: sending the join request to {}", g0_info.ip_addr);
 
+        co_await utils::get_local_injector().inject("crash_before_group0_join", [](auto& handler) -> future<> {
+            // This wait ensures that node gossips its state before crashing.
+            co_await handler.wait_for_message(db::timeout_clock::now() + std::chrono::minutes(5));
+            throw std::runtime_error("deliberately crashed for orphan remover test");
+        });
         auto result = co_await ser::join_node_rpc_verbs::send_join_node_request(
                 &_ss._messaging.local(), netw::msg_addr(g0_info.ip_addr), g0_info.id, _req);
         std::visit(overloaded_functor {
@@ -1343,8 +1352,10 @@ future<> storage_service::raft_initialize_discovery_leader(const join_node_reque
         insert_join_request_mutations.emplace_back(
                 co_await _sys_ks.local().make_auth_version_mutation(guard.write_timestamp(), db::system_keyspace::auth_version_t::v2));
 
-        insert_join_request_mutations.emplace_back(
-                co_await _sys_ks.local().make_view_builder_version_mutation(guard.write_timestamp(), db::system_keyspace::view_builder_version_t::v2));
+        if (!utils::get_local_injector().is_enabled("skip_vb_v2_version_mut")) {
+            insert_join_request_mutations.emplace_back(
+                    co_await _sys_ks.local().make_view_builder_version_mutation(guard.write_timestamp(), db::system_keyspace::view_builder_version_t::v2));
+        }
 
         topology_change change{std::move(insert_join_request_mutations)};
         group0_command g0_cmd = _group0->client().prepare_command(std::move(change), guard,
@@ -4678,22 +4689,7 @@ future<> storage_service::do_cluster_cleanup() {
 }
 
 future<sstring> storage_service::wait_for_topology_request_completion(utils::UUID id, bool require_entry) {
-    rtlogger.debug("Start waiting for topology request completion (request id {})", id);
-    while (true) {
-        auto c = _topology_state_machine.reload_count;
-        auto [done, error] = co_await  _sys_ks.local().get_topology_request_state(id, require_entry);
-        if (done) {
-            rtlogger.debug("Request with id {} is completed with status: {}", id, error.empty() ? sstring("success") : error);
-            co_return error;
-        }
-        if (c == _topology_state_machine.reload_count) {
-            // wait only if the state was not reloaded while we were preempted
-            rtlogger.debug("Waiting for a topology event while waiting for topology request completion (request id {})", id);
-            co_await _topology_state_machine.event.when();
-        }
-    }
-
-    co_return sstring();
+    co_return co_await _topology_state_machine.wait_for_request_completion(_sys_ks.local(), id, require_entry);
 }
 
 future<> storage_service::wait_for_topology_not_busy() {
@@ -5405,7 +5401,11 @@ future<> storage_service::process_tablet_split_candidate(table_id table) noexcep
             sleep = true;
         }
         if (sleep) {
-            co_await split_retry.retry(_group0_as);
+            try {
+                co_await split_retry.retry(_group0_as);
+            } catch (...) {
+                slogger.warn("Sleep in split monitor failed with {}", std::current_exception());
+            }
         }
     }
 }
@@ -6040,6 +6040,10 @@ future<> storage_service::stream_tablet(locator::global_tablet_id tablet) {
                 throw std::runtime_error(fmt::format("Cannot stream within the same node using regular migration, tablet: {}, shard {} -> {}",
                                                      tablet, leaving_replica->shard, trinfo->pending_replica->shard));
             }
+            co_await utils::get_local_injector().inject("migration_streaming_wait", [] (auto& handler) {
+                rtlogger.info("migration_streaming_wait: start");
+                return handler.wait_for_message(db::timeout_clock::now() + std::chrono::minutes(2));
+            });
             auto& table = _db.local().find_column_family(tablet.table);
             std::vector<sstring> tables = {table.schema()->cf_name()};
             auto my_id = tm->get_my_id();
