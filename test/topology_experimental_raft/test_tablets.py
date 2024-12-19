@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2023-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 from cassandra.query import SimpleStatement, ConsistencyLevel
 
@@ -23,7 +23,7 @@ import glob
 from collections import defaultdict
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-
+import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,10 @@ async def inject_error_one_shot_on(manager, error_name, servers):
 
 async def inject_error_on(manager, error_name, servers):
     errs = [manager.api.enable_injection(s.ip_addr, error_name, False) for s in servers]
+    await asyncio.gather(*errs)
+
+async def disable_injection_on(manager, error_name, servers):
+    errs = [manager.api.disable_injection(s.ip_addr, error_name) for s in servers]
     await asyncio.gather(*errs)
 
 async def repair_on_node(manager: ManagerClient, server: ServerInfo, servers: list[ServerInfo], ranges: str = ''):
@@ -1290,7 +1294,10 @@ async def test_tablet_storage_freeing(manager: ManagerClient):
     await cql.run_async("CREATE TABLE test.test (pk int PRIMARY KEY, v text) WITH compression = {'sstable_compression': ''};")
     insert_stmt = cql.prepare("INSERT INTO test.test (pk, v) VALUES (?, ?);")
     payload = "a"*10000
-    await asyncio.gather(*[cql.run_async(insert_stmt, [k, payload]) for k in range(n_partitions)])
+
+    max_concurrency = 100
+    for batch in itertools.batched(range(n_partitions), max_concurrency):
+        await asyncio.gather(*[cql.run_async(insert_stmt, [k, payload]) for k in batch])
     await manager.api.keyspace_flush(servers[0].ip_addr, "test")
 
     logger.info("Start second node.")

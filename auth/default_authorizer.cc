@@ -5,7 +5,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
 #include "auth/default_authorizer.hh"
@@ -53,7 +53,6 @@ static const class_registrator<
 
 default_authorizer::default_authorizer(cql3::query_processor& qp, ::service::raft_group0_client& g0, ::service::migration_manager& mm)
         : _qp(qp)
-        , _group0_client(g0)
         , _migration_manager(mm) {
 }
 

@@ -1,6 +1,6 @@
 # Copyright 2021-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 
 ##############################################################################
 # Tests for Scylla's metrics (see docs/dev/metrics.md) for Alternator
@@ -176,7 +176,7 @@ def test_table_operations(dynamodb, metrics):
             # here because new_test_table already does it (to make sure the
             # table exists before returning), but let's not assume it.
             dynamodb.meta.client.describe_table(TableName=table.name)
-            dynamodb.meta.client.update_table(TableName=table.name)
+            dynamodb.meta.client.update_table(TableName=table.name, BillingMode='PAY_PER_REQUEST')
 
 # Test counters for DeleteItem, GetItem, PutItem and UpdateItem:
 def test_item_operations(test_table_s, metrics):

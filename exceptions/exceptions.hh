@@ -5,7 +5,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
 #pragma once
@@ -319,16 +319,3 @@ public:
 };
 
 } // namespace exceptions
-
-#if FMT_VERSION < 100000
-
-#include <concepts>
-
-// fmt v10 introduced formatter for std::exception
-template <std::derived_from<exceptions::cassandra_exception> T>
-struct fmt::formatter<T> : fmt::formatter<string_view> {
-    auto format(const T& e, fmt::format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{}", e.what());
-    }
-};
-#endif

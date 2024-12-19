@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include <fmt/core.h>
@@ -36,20 +36,6 @@
 #include "utils/to_string.hh"
 
 using namespace std::string_literals;
-
-#if FMT_VERSION < 100000
-// {fmt} v9 considers basic_sstring<int8_t, uint32_t, 31, false>
-// as a string-like type, but it is not, as its char type is
-// int8_t, not char, so fix this by specializing the related type
-// trait, which is used when formatting when print a range whose
-// element type is "bytes"
-namespace fmt::detail {
-
-template <>
-struct is_std_string_like<seastar::basic_sstring<signed char, unsigned int, 31, false>> : std::false_type {};
-
-}
-#endif
 
 namespace cdc {
 api::timestamp_type find_timestamp(const mutation&);

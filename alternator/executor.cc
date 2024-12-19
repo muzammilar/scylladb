@@ -3,11 +3,12 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include <fmt/ranges.h>
 #include "alternator/executor.hh"
+#include "alternator/consumed_capacity.hh"
 #include "auth/permission.hh"
 #include "auth/resource.hh"
 #include "cdc/log.hh"

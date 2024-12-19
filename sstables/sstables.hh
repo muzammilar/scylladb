@@ -4,7 +4,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -710,6 +710,8 @@ private:
     size_t total_memory_reclaimed() const;
     // Reload components from which memory was previously reclaimed
     future<> reload_reclaimed_components();
+    // Disable reload of components for this sstable
+    void disable_component_memory_reload();
 
 public:
     // Finds first position_in_partition in a given partition.
@@ -905,6 +907,19 @@ public:
     column_translation get_column_translation(
             const schema& s, const serialization_header& h, const sstable_enabled_features& f) {
         return _column_translation.get_for_schema(s, h, f);
+    }
+    column_translation get_column_translation(const schema& s) {
+        if (get_version() >= sstable_version_types::mc) [[likely]] {
+            return _column_translation.get_for_schema(s, get_serialization_header(), features());
+        } else {
+            return _column_translation.get_for_schema(s);
+        }
+    }
+    column_translation get_column_translation() {
+        if (!_column_translation.version()) {
+            return get_column_translation(*_schema);
+        }
+        return _column_translation;
     }
     const std::vector<unsigned>& get_shards_for_this_sstable() const {
         return _shards;

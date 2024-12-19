@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -129,20 +129,3 @@ public:
 };
 
 }
-
-#if FMT_VERSION < 100000
-// fmt v10 introduced formatter for std::exception
-template <>
-struct fmt::formatter<data_dictionary::no_such_keyspace> : fmt::formatter<string_view> {
-    auto format(const data_dictionary::no_such_keyspace& e, fmt::format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{}", e.what());
-    }
-};
-
-template <>
-struct fmt::formatter<data_dictionary::no_such_column_family> : fmt::formatter<string_view> {
-    auto format(const data_dictionary::no_such_column_family& e, fmt::format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{}", e.what());
-    }
-};
-#endif

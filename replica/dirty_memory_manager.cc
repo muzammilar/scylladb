@@ -1,5 +1,5 @@
 // Copyright (C) 2012-present ScyllaDB
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 
 
 #include "utils/assert.hh"
@@ -94,11 +94,6 @@ region_group::moved(logalloc::region* old_address, logalloc::region* new_address
     // assignment operator.
     old_child->_heap_handle = std::make_optional(_regions.push(new_child));
     region_group_binomial_group_sanity_check(_regions);
-}
-
-bool
-region_group::execution_permitted() noexcept {
-    return !under_unspooled_pressure() && !_under_real_pressure;
 }
 
 void

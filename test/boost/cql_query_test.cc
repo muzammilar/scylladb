@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 
@@ -40,7 +40,6 @@
 #include "cql3/cql_config.hh"
 #include "test/lib/exception_utils.hh"
 #include "utils/rjson.hh"
-#include "utils/fmt-compat.hh"
 #include "schema/schema_builder.hh"
 #include "service/migration_manager.hh"
 #include <boost/regex.hpp>

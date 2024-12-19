@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2022-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 import logging
 import sys
@@ -31,7 +31,7 @@ async def test_multidc(request: pytest.FixtureRequest, manager: ManagerClient) -
             property_file={'dc': f'dc{i}', 'rack': 'myrack1'}
         )
         logger.info(s_info)
-    random_tables = RandomTables(request.node.name, manager, unique_name(), 3)
+    random_tables = RandomTables(request.node.name, manager, unique_name(), 1)
     logger.info("Creating new tables")
     await random_tables.add_tables(ntables=3, ncolumns=3)
     await random_tables.verify_schema()

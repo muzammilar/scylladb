@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -11,6 +11,7 @@
 #include "seastarx.hh"
 #include "service/paxos/cas_request.hh"
 #include "utils/rjson.hh"
+#include "consumed_capacity.hh"
 #include "executor.hh"
 #include "tracing/trace_state.hh"
 #include "keys.hh"

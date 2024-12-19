@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2022-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 # This file configures pytest for all tests in this directory, and also
 # defines common test fixtures for all of them to use
@@ -230,7 +230,10 @@ def cql(manager):
 async def random_tables(request, manager):
     rf_marker = request.node.get_closest_marker("replication_factor")
     replication_factor = rf_marker.args[0] if rf_marker is not None else 3  # Default 3
-    tables = RandomTables(request.node.name, manager, unique_name(), replication_factor)
+    enable_tablets = request.node.get_closest_marker("enable_tablets")
+    enable_tablets = enable_tablets.args[0] if enable_tablets is not None else None
+    tables = RandomTables(request.node.name, manager, unique_name(),
+                          replication_factor, None, enable_tablets)
     yield tables
 
     # Don't drop tables at the end if we failed or the cluster is dirty - it may be impossible

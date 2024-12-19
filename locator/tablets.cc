@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include "locator/tablet_replication_strategy.hh"
@@ -30,6 +30,14 @@
 namespace locator {
 
 seastar::logger tablet_logger("tablets");
+
+std::optional<std::pair<tablet_id, tablet_id>> tablet_map::sibling_tablets(tablet_id t) const {
+    if (tablet_count() == 1) {
+        return std::nullopt;
+    }
+    auto first_sibling = tablet_id(t.value() & ~0x1);
+    return std::make_pair(first_sibling, *next_tablet(first_sibling));
+}
 
 
 static
@@ -152,6 +160,33 @@ bool tablet_has_excluded_node(const locator::topology& topo, const tablet_info& 
     return false;
 }
 
+tablet_info::tablet_info(tablet_replica_set replicas, db_clock::time_point repair_time, tablet_task_info repair_task_info, tablet_task_info migration_task_info)
+    : replicas(std::move(replicas))
+    , repair_time(repair_time)
+    , repair_task_info(std::move(repair_task_info))
+    , migration_task_info(std::move(migration_task_info))
+{}
+
+tablet_info::tablet_info(tablet_replica_set replicas)
+    : tablet_info(std::move(replicas), db_clock::time_point{}, tablet_task_info{}, tablet_task_info{})
+{}
+
+std::optional<tablet_info> merge_tablet_info(tablet_info a, tablet_info b) {
+    if (a.repair_task_info.is_valid() || b.repair_task_info.is_valid()) {
+        return {};
+    }
+
+    auto sorted = [] (tablet_replica_set rs) {
+        std::ranges::sort(rs, std::less<tablet_replica>());
+        return rs;
+    };
+    if (sorted(a.replicas) != sorted(b.replicas)) {
+        return {};
+    }
+
+    auto repair_time = std::max(a.repair_time, b.repair_time);
+    return tablet_info(std::move(a.replicas), repair_time, a.repair_task_info, a.migration_task_info);
+}
 
 std::optional<tablet_replica> get_leaving_replica(const tablet_info& tinfo, const tablet_transition_info& trinfo) {
     auto leaving = substract_sets(tinfo.replicas, trinfo.next);
@@ -407,6 +442,24 @@ future<> tablet_map::for_each_tablet(seastar::noncopyable_function<future<>(tabl
     }
 }
 
+future<> tablet_map::for_each_sibling_tablets(seastar::noncopyable_function<future<>(tablet_desc, std::optional<tablet_desc>)> func) const {
+    auto make_desc = [this] (tablet_id tid) {
+        return tablet_desc{tid, &get_tablet_info(tid), get_tablet_transition_info(tid)};
+    };
+    if (_tablets.size() == 1) {
+        co_return co_await func(make_desc(first_tablet()), std::nullopt);
+    }
+    for (std::optional<tablet_id> tid = first_tablet(); tid; tid = next_tablet(*tid)) {
+        auto tid1 = tid;
+        auto tid2 = tid = next_tablet(*tid);
+        if (!tid2) {
+            // Cannot happen with power-of-two invariant.
+            throw std::logic_error(format("Cannot retrieve sibling tablet with tablet count {}", tablet_count()));
+        }
+        co_await func(make_desc(*tid1), make_desc(*tid2));
+    }
+}
+
 void tablet_map::clear_transitions() {
     _transitions.clear();
 }
@@ -503,6 +556,8 @@ static const std::unordered_map<tablet_task_type, sstring> tablet_task_type_to_n
     {locator::tablet_task_type::none, "none"},
     {locator::tablet_task_type::user_repair, "user_repair"},
     {locator::tablet_task_type::auto_repair, "auto_repair"},
+    {locator::tablet_task_type::migration, "migration"},
+    {locator::tablet_task_type::intranode_migration, "intranode_migration"},
 };
 
 static const std::unordered_map<sstring, tablet_task_type> tablet_task_type_from_name = std::invoke([] {
@@ -516,7 +571,7 @@ static const std::unordered_map<sstring, tablet_task_type> tablet_task_type_from
 sstring tablet_task_type_to_string(tablet_task_type kind) {
     auto i = tablet_task_type_to_name.find(kind);
     if (i == tablet_task_type_to_name.end()) {
-        on_internal_error(tablet_logger, format("Invalid repair task type: {}", static_cast<int>(kind)));
+        on_internal_error(tablet_logger, format("Invalid tablet task type: {}", static_cast<int>(kind)));
     }
     return i->second;
 }
@@ -539,6 +594,10 @@ bool resize_decision::operator==(const resize_decision& o) const {
 
 bool tablet_map::needs_split() const {
     return std::holds_alternative<resize_decision::split>(_resize_decision.way);
+}
+
+bool tablet_map::needs_merge() const {
+    return std::holds_alternative<resize_decision::merge>(_resize_decision.way);
 }
 
 const locator::resize_decision& tablet_map::resize_decision() const {
@@ -579,6 +638,10 @@ resize_decision::seq_number_t resize_decision::next_sequence_number() const {
     // for it to happen, about 21x the age of the universe, or ~11x according to the new
     // prediction after james webb.
     return (sequence_number == std::numeric_limits<seq_number_t>::max()) ? 0 : sequence_number + 1;
+}
+
+bool resize_decision::initial_decision() const {
+    return sequence_number == 0;
 }
 
 table_load_stats& table_load_stats::operator+=(const table_load_stats& s) noexcept {
@@ -754,8 +817,7 @@ private:
         return replicas;
     }
 
-    template<typename Set>
-    Set get_pending_helper(const token& search_token) const {
+    host_id_vector_topology_change get_pending_helper(const token& search_token) const {
         auto&& tablets = get_tablet_map();
         auto tablet = tablets.get_tablet_id(search_token);
         auto&& info = tablets.get_tablet_transition_info(tablet);
@@ -771,11 +833,7 @@ private:
                 }
                 tablet_logger.trace("get_pending_endpoints({}): table={}, tablet={}, replica={}",
                                     search_token, _table, tablet, *info->pending_replica);
-                if constexpr (std::is_same_v<Set, inet_address_vector_topology_change>) {
-                    return {_tmptr->get_endpoint_for_host_id(info->pending_replica->host)};
-                } else {
-                    return {info->pending_replica->host};
-                }
+                return {info->pending_replica->host};
             }
             case write_replica_set_selector::next:
                 return {};
@@ -783,8 +841,7 @@ private:
         on_internal_error(tablet_logger, format("Invalid replica selector", static_cast<int>(info->writes)));
     }
 
-    template<typename Set>
-    Set get_for_reading_helper(const token& search_token) const {
+    host_id_vector_replica_set get_for_reading_helper(const token& search_token) const {
         auto&& tablets = get_tablet_map();
         auto tablet = tablets.get_tablet_id(search_token);
         auto&& info = tablets.get_tablet_transition_info(tablet);
@@ -802,13 +859,7 @@ private:
             on_internal_error(tablet_logger, format("Invalid replica selector", static_cast<int>(info->reads)));
         });
         tablet_logger.trace("get_endpoints_for_reading({}): table={}, tablet={}, replicas={}", search_token, _table, tablet, replicas);
-        if constexpr (std::is_same_v<Set, inet_address_vector_replica_set>) {
-            auto result = to_replica_set(replicas);
-            maybe_remove_node_being_replaced(*_tmptr, *_rs, result);
-            return result;
-        } else {
-            return to_host_set(replicas);
-        }
+        return to_host_set(replicas);
     }
 
 
@@ -836,18 +887,12 @@ public:
         return to_host_set(get_replicas_for_write(search_token));
     }
 
-    virtual inet_address_vector_replica_set get_natural_endpoints_without_node_being_replaced(const token& search_token) const override {
-        auto result = get_natural_endpoints(search_token);
-        maybe_remove_node_being_replaced(*_tmptr, *_rs, result);
-        return result;
-    }
-
-    virtual future<dht::token_range_vector> get_ranges(inet_address ep) const override {
+    virtual future<dht::token_range_vector> get_ranges(host_id ep) const override {
         dht::token_range_vector ret;
 
         auto& tablet_map = get_tablet_map();
         for (auto tablet_id : tablet_map.tablet_ids()) {
-            auto endpoints = get_natural_endpoints(tablet_map.get_last_token(tablet_id));
+            auto endpoints = get_natural_replicas(tablet_map.get_last_token(tablet_id));
             auto should_add_range = std::find(std::begin(endpoints), std::end(endpoints), ep) != std::end(endpoints);
 
             if (should_add_range) {
@@ -859,20 +904,12 @@ public:
         co_return ret;
     }
 
-    virtual inet_address_vector_topology_change get_pending_endpoints(const token& search_token) const override {
-        return get_pending_helper<inet_address_vector_topology_change>(search_token);
-    }
-
     virtual host_id_vector_topology_change get_pending_replicas(const token& search_token) const override {
-        return get_pending_helper<host_id_vector_topology_change>(search_token);
-    }
-
-    virtual inet_address_vector_replica_set get_endpoints_for_reading(const token& search_token) const override {
-        return get_for_reading_helper<inet_address_vector_replica_set>(search_token);
+        return get_pending_helper(search_token);
     }
 
     virtual host_id_vector_replica_set get_replicas_for_reading(const token& search_token) const override {
-        return get_for_reading_helper<host_id_vector_replica_set>(search_token);
+        return get_for_reading_helper(search_token);
     }
 
     std::optional<tablet_routing_info> check_locality(const token& search_token) const override {
@@ -1111,18 +1148,30 @@ bool locator::tablet_task_info::is_valid() const {
     return request_type != locator::tablet_task_type::none;
 }
 
-bool locator::tablet_task_info::is_user_request() const {
+bool locator::tablet_task_info::is_user_repair_request() const {
     return request_type == locator::tablet_task_type::user_repair;
 }
 
-locator::tablet_task_info locator::tablet_task_info::make_auto_request() {
+locator::tablet_task_info locator::tablet_task_info::make_auto_repair_request() {
     long sched_nr = 0;
     auto tablet_task_id = locator::tablet_task_id(utils::UUID_gen::get_time_UUID());
     return locator::tablet_task_info{locator::tablet_task_type::auto_repair, tablet_task_id, db_clock::now(), sched_nr, db_clock::time_point()};
 }
 
-locator::tablet_task_info locator::tablet_task_info::make_user_request() {
+locator::tablet_task_info locator::tablet_task_info::make_user_repair_request() {
     long sched_nr = 0;
     auto tablet_task_id = locator::tablet_task_id(utils::UUID_gen::get_time_UUID());
     return locator::tablet_task_info{locator::tablet_task_type::user_repair, tablet_task_id, db_clock::now(), sched_nr, db_clock::time_point()};
+}
+
+locator::tablet_task_info locator::tablet_task_info::make_migration_request() {
+    long sched_nr = 0;
+    auto tablet_task_id = locator::tablet_task_id(utils::UUID_gen::get_time_UUID());
+    return locator::tablet_task_info{locator::tablet_task_type::migration, tablet_task_id, db_clock::now(), sched_nr, db_clock::time_point()};
+}
+
+locator::tablet_task_info locator::tablet_task_info::make_intranode_migration_request() {
+    long sched_nr = 0;
+    auto tablet_task_id = locator::tablet_task_id(utils::UUID_gen::get_time_UUID());
+    return locator::tablet_task_info{locator::tablet_task_type::intranode_migration, tablet_task_id, db_clock::now(), sched_nr, db_clock::time_point()};
 }
