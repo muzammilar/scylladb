@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0)
  */
 
 #include "multishard_mutation_query.hh"
@@ -413,8 +413,8 @@ future<mutation_reader> make_partition_mutation_dump_reader(
     {
         auto erm = tbl.get_effective_replication_map();
         auto& topo = erm->get_topology();
-        const auto endpoints = erm->get_endpoints_for_reading(dk.token());
-        if (std::ranges::find(endpoints, topo.this_node()->endpoint()) == endpoints.end()) {
+        const auto endpoints = erm->get_replicas_for_reading(dk.token());
+        if (std::ranges::find(endpoints, topo.this_node()->host_id()) == endpoints.end()) {
             co_return make_empty_flat_reader_v2(output_schema, std::move(permit));
         }
     }

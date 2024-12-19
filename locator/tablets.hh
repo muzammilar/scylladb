@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -47,7 +47,7 @@ struct tablet_id {
     explicit tablet_id(size_t id) : id(id) {}
     size_t value() const { return id; }
     explicit operator size_t() const { return id; }
-    bool operator<=>(const tablet_id&) const = default;
+    auto operator<=>(const tablet_id&) const = default;
 };
 
 /// Identifies tablet (not be confused with tablet replica) in the scope of the whole cluster.
@@ -55,14 +55,14 @@ struct global_tablet_id {
     table_id table;
     tablet_id tablet;
 
-    bool operator<=>(const global_tablet_id&) const = default;
+    auto operator<=>(const global_tablet_id&) const = default;
 };
 
 struct tablet_replica {
     host_id host;
     shard_id shard;
 
-    bool operator==(const tablet_replica&) const = default;
+    auto operator<=>(const tablet_replica&) const = default;
 };
 
 using tablet_replica_set = utils::small_vector<tablet_replica, 3>;
@@ -147,6 +147,8 @@ enum class tablet_task_type {
     none,
     user_repair,
     auto_repair,
+    migration,
+    intranode_migration
 };
 
 sstring tablet_task_type_to_string(tablet_task_type);
@@ -160,9 +162,11 @@ struct tablet_task_info {
     db_clock::time_point sched_time;
     bool operator==(const tablet_task_info&) const = default;
     bool is_valid() const;
-    bool is_user_request() const;
-    static tablet_task_info make_user_request();
-    static tablet_task_info make_auto_request();
+    bool is_user_repair_request() const;
+    static tablet_task_info make_user_repair_request();
+    static tablet_task_info make_auto_repair_request();
+    static tablet_task_info make_migration_request();
+    static tablet_task_info make_intranode_migration_request();
 };
 
 /// Stores information about a single tablet.
@@ -170,9 +174,20 @@ struct tablet_info {
     tablet_replica_set replicas;
     db_clock::time_point repair_time;
     locator::tablet_task_info repair_task_info;
+    locator::tablet_task_info migration_task_info;
+
+    tablet_info() = default;
+    tablet_info(tablet_replica_set, db_clock::time_point, tablet_task_info, tablet_task_info);
+    tablet_info(tablet_replica_set);
 
     bool operator==(const tablet_info&) const = default;
 };
+
+// Merges tablet_info b into a, but with following constraints:
+//  - they cannot have active repair task, since each task has a different id
+//  - their replicas must be all co-located.
+// If tablet infos are mergeable, merged info is returned. Otherwise, nullopt.
+std::optional<tablet_info> merge_tablet_info(tablet_info a, tablet_info b);
 
 /// Represents states of the tablet migration state machine.
 ///
@@ -312,6 +327,8 @@ struct resize_decision {
     bool operator==(const resize_decision&) const;
     sstring type_name() const;
     seq_number_t next_sequence_number() const;
+    // Returns true if this is the initial decision, before split or merge was emitted.
+    bool initial_decision() const;
 };
 
 struct table_load_stats {
@@ -345,6 +362,12 @@ struct repair_scheduler_config {
 };
 
 using load_stats_ptr = lw_shared_ptr<const load_stats>;
+
+struct tablet_desc {
+    tablet_id tid;
+    const tablet_info* info; // cannot be null.
+    const tablet_transition_info* transition; // null if there's no transition.
+};
 
 /// Stores information about tablets of a single table.
 ///
@@ -440,6 +463,11 @@ public:
         return tablet_id(size_t(t) + 1);
     }
 
+    // Returns the pair of sibling tablets for a given tablet id.
+    // For example, if id 1 is provided, a pair of 0 and 1 is returned.
+    // Returns disengaged optional when sibling pair cannot be found.
+    std::optional<std::pair<tablet_id, tablet_id>> sibling_tablets(tablet_id t) const;
+
     /// Returns true iff tablet has a given replica.
     /// If tablet is in transition, considers both previous and next replica set.
     bool has_replica(tablet_id, tablet_replica) const;
@@ -450,6 +478,10 @@ public:
 
     /// Calls a given function for each tablet in the map in token ownership order.
     future<> for_each_tablet(seastar::noncopyable_function<future<>(tablet_id, const tablet_info&)> func) const;
+
+    /// Calls a given function for each sibling tablet in the map in token ownership order.
+    /// If tablet count == 1, then there will be only one call and 2nd tablet_desc is disengaged.
+    future<> for_each_sibling_tablets(seastar::noncopyable_function<future<>(tablet_desc, std::optional<tablet_desc>)> func) const;
 
     const auto& transitions() const {
         return _transitions;
@@ -480,6 +512,7 @@ public:
     bool operator==(const tablet_map&) const = default;
 
     bool needs_split() const;
+    bool needs_merge() const;
 
     /// Returns the token_range in which the given token will belong to after a tablet split
     dht::token_range get_token_range_after_split(const token& t) const noexcept;

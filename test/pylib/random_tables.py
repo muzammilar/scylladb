@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2022-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 """This module provides helper classes to manage CQL tables, perform random schema changes,
 and verify expected current schema.
@@ -266,8 +266,13 @@ class RandomTables():
     """A list of managed random tables"""
 
     def __init__(self, test_name: str, manager: ManagerClient, keyspace: str,
-                 replication_factor: int, dc_replication_factor: dict[str, int] = None):
+                 replication_factor: int,
+                 dc_replication_factor: dict[str, int] = None,
+                 enable_tablets: None | bool = None):
         keyspace_query = f"CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH REPLICATION = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : {replication_factor}}}"
+        if enable_tablets is not None:
+            enable_tablets = str(enable_tablets).lower()
+            keyspace_query += f" AND TABLETS = {{'enabled': {enable_tablets} }}"
         self.test_name = test_name
         self.manager = manager
         self.keyspace = keyspace

@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 #pragma once
 
@@ -815,16 +815,6 @@ public:
 };
 
 } // namespace raft
-
-#if FMT_VERSION < 100000
-// fmt v10 introduced formatter for std::exception
-template <std::derived_from<raft::error> T>
-struct fmt::formatter<T> : fmt::formatter<string_view> {
-    auto format(const T& e, fmt::format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{}", e.what());
-    }
-};
-#endif
 
 template <>
 struct fmt::formatter<raft::server_address> : fmt::formatter<string_view> {

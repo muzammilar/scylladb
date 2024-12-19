@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include <fmt/ranges.h>
@@ -27,12 +27,14 @@
 #include <cfloat>
 #include <algorithm>
 
+#include <boost/range/adaptor/transformed.hpp>
+
 static logging::logger llog("sstables_loader");
 
 namespace {
 
 class send_meta_data {
-    gms::inet_address _node;
+    locator::host_id _node;
     seastar::rpc::sink<frozen_mutation_fragment, streaming::stream_mutation_fragments_cmd> _sink;
     seastar::rpc::source<int32_t> _source;
     bool _error_from_peer = false;
@@ -56,7 +58,7 @@ private:
         co_return;
     }
 public:
-    send_meta_data(gms::inet_address node,
+    send_meta_data(locator::host_id node,
             seastar::rpc::sink<frozen_mutation_fragment, streaming::stream_mutation_fragments_cmd> sink,
             seastar::rpc::source<int32_t> source)
         : _node(std::move(node))
@@ -155,10 +157,10 @@ public:
     virtual ~sstable_streamer() {}
 
     virtual future<> stream(std::function<void(unsigned)> on_streamed);
-    inet_address_vector_replica_set get_endpoints(const dht::token& token) const;
+    host_id_vector_replica_set get_endpoints(const dht::token& token) const;
     future<> stream_sstable_mutations(streaming::plan_id, const dht::partition_range&, std::vector<sstables::shared_sstable>);
 protected:
-    virtual inet_address_vector_replica_set get_primary_endpoints(const dht::token& token) const;
+    virtual host_id_vector_replica_set get_primary_endpoints(const dht::token& token) const;
     future<> stream_sstables(const dht::partition_range&, std::vector<sstables::shared_sstable>, std::function<void(unsigned)> on_streamed);
 };
 
@@ -171,15 +173,14 @@ public:
     }
 
     virtual future<> stream(std::function<void(unsigned)> on_streamed) override;
-    virtual inet_address_vector_replica_set get_primary_endpoints(const dht::token& token) const override;
+    virtual host_id_vector_replica_set get_primary_endpoints(const dht::token& token) const override;
 
 private:
-    inet_address_vector_replica_set to_replica_set(const locator::tablet_replica_set& replicas) const {
-        auto& tm = _erm->get_token_metadata();
-        inet_address_vector_replica_set result;
+    host_id_vector_replica_set to_replica_set(const locator::tablet_replica_set& replicas) const {
+        host_id_vector_replica_set result;
         result.reserve(replicas.size());
         for (auto&& replica : replicas) {
-            result.push_back(tm.get_endpoint_for_host_id(replica.host));
+            result.push_back(replica.host);
         }
         return result;
     }
@@ -190,23 +191,23 @@ private:
     }
 };
 
-inet_address_vector_replica_set sstable_streamer::get_endpoints(const dht::token& token) const {
+host_id_vector_replica_set sstable_streamer::get_endpoints(const dht::token& token) const {
     if (_primary_replica_only) {
         return get_primary_endpoints(token);
     }
-    auto current_targets = _erm->get_natural_endpoints_without_node_being_replaced(token);
-    auto pending = _erm->get_pending_endpoints(token);
+    auto current_targets = _erm->get_natural_replicas(token);
+    auto pending = _erm->get_pending_replicas(token);
     std::move(pending.begin(), pending.end(), std::back_inserter(current_targets));
     return current_targets;
 }
 
-inet_address_vector_replica_set sstable_streamer::get_primary_endpoints(const dht::token& token) const {
-    auto current_targets = _erm->get_natural_endpoints(token);
+host_id_vector_replica_set sstable_streamer::get_primary_endpoints(const dht::token& token) const {
+    auto current_targets = _erm->get_natural_replicas(token);
     current_targets.resize(1);
     return current_targets;
 }
 
-inet_address_vector_replica_set tablet_sstable_streamer::get_primary_endpoints(const dht::token& token) const {
+host_id_vector_replica_set tablet_sstable_streamer::get_primary_endpoints(const dht::token& token) const {
     auto tid = _tablet_map.get_tablet_id(token);
     auto replicas = locator::get_primary_replicas(_tablet_map.get_tablet_info(tid), _tablet_map.get_tablet_transition_info(tid));
     return to_replica_set(replicas);
@@ -301,8 +302,8 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
     }
 
     auto start_time = std::chrono::steady_clock::now();
-    inet_address_vector_replica_set current_targets;
-    std::unordered_map<gms::inet_address, send_meta_data> metas;
+    host_id_vector_replica_set current_targets;
+    std::unordered_map<locator::host_id, send_meta_data> metas;
     size_t num_partitions_processed = 0;
     size_t num_bytes_read = 0;
     auto permit = co_await _db.obtain_reader_permit(_table, "sstables_loader::load_and_stream()", db::no_timeout, {});
@@ -324,7 +325,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
                 for (auto& node : current_targets) {
                     if (!metas.contains(node)) {
                         auto [sink, source] = co_await _ms.make_sink_and_source_for_stream_mutation_fragments(reader.schema()->version(),
-                                ops_uuid, cf_id, estimated_partitions, reason, service::default_session_id, netw::messaging_service::msg_addr(node));
+                                ops_uuid, cf_id, estimated_partitions, reason, service::default_session_id, node);
                         llog.debug("load_and_stream: ops_uuid={}, make sink and source for node={}", ops_uuid, node);
                         metas.emplace(node, send_meta_data(node, std::move(sink), std::move(source)));
                         metas.at(node).receive();
@@ -333,7 +334,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
             }
             frozen_mutation_fragment fmf = freeze(*s, *mf);
             num_bytes_read += fmf.representation().size();
-            co_await coroutine::parallel_for_each(current_targets, [&metas, &fmf, is_partition_start] (const gms::inet_address& node) {
+            co_await coroutine::parallel_for_each(current_targets, [&metas, &fmf, is_partition_start] (const locator::host_id& node) {
                 return metas.at(node).send(fmf, is_partition_start);
             });
         }
@@ -345,7 +346,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
     }
     co_await reader.close();
     try {
-        co_await coroutine::parallel_for_each(metas.begin(), metas.end(), [failed] (std::pair<const gms::inet_address, send_meta_data>& pair) {
+        co_await coroutine::parallel_for_each(metas.begin(), metas.end(), [failed] (std::pair<const locator::host_id, send_meta_data>& pair) {
             auto& meta = pair.second;
             return meta.finish(failed);
         });
@@ -495,6 +496,11 @@ public:
     virtual tasks::is_user_task is_user_task() const noexcept override {
         return tasks::is_user_task::yes;
     }
+
+    tasks::is_abortable is_abortable() const noexcept override {
+        return tasks::is_abortable::yes;
+    }
+
     virtual future<tasks::task_manager::task::progress> get_progress() const override {
         llog.debug("get_progress: {}", _num_sstables_processed);
         unsigned processed = co_await _loader.map_reduce(adder<unsigned>(), [this] (auto&) {
@@ -514,14 +520,50 @@ future<> sstables_loader::download_task_impl::run() {
         .load_bloom_filter = false,
     };
     llog.debug("Loading sstables from {}({}/{})", _endpoint, _bucket, _prefix);
-    auto [ table_id, sstables_on_shards ] = co_await replica::distributed_loader::get_sstables_from_object_store(_loader.local()._db, _ks, _cf, _sstables, _endpoint, _bucket, _prefix, cfg);
-    llog.debug("Streaming sstables from {}({}/{})", _endpoint, _bucket, _prefix);
-    co_await _loader.invoke_on_all([this, &sstables_on_shards, table_id] (sstables_loader& loader) mutable -> future<> {
-        co_await loader.load_and_stream(_ks, _cf, table_id, std::move(sstables_on_shards[this_shard_id()]), false, false,
-                                        [this] (unsigned num_streamed) {
-            _num_sstables_processed[this_shard_id()] += num_streamed;
-        });
+
+    std::vector<seastar::abort_source> shard_aborts(smp::count);
+    auto [ table_id, sstables_on_shards ] = co_await replica::distributed_loader::get_sstables_from_object_store(_loader.local()._db, _ks, _cf, _sstables, _endpoint, _bucket, _prefix, cfg, [&] {
+        return &shard_aborts[this_shard_id()];
     });
+    llog.debug("Streaming sstables from {}({}/{})", _endpoint, _bucket, _prefix);
+    std::exception_ptr ex;
+    gate g;
+    try {
+        _as.check();
+
+        auto s = _as.subscribe([&]() noexcept {
+            try {
+                auto h = g.hold();
+                (void)smp::invoke_on_all([&shard_aborts, ex = _as.abort_requested_exception_ptr()] {
+                    shard_aborts[this_shard_id()].request_abort_ex(ex);
+                }).finally([h = std::move(h)] {});
+            } catch (...) {
+            }
+        });
+
+        co_await _loader.invoke_on_all([this, &sstables_on_shards, table_id] (sstables_loader& loader) mutable -> future<> {
+            co_await loader.load_and_stream(_ks, _cf, table_id, std::move(sstables_on_shards[this_shard_id()]), false, false, [this] (unsigned num_streamed) {
+                _num_sstables_processed[this_shard_id()] += num_streamed;
+            });
+        });
+    } catch (...) {
+        ex = std::current_exception();
+    }
+
+    co_await g.close();
+
+    if (_as.abort_requested()) {
+        if (!ex) {
+            ex = _as.abort_requested_exception_ptr();
+        }
+    }
+
+    if (ex) {
+        co_await _loader.invoke_on_all([&sstables_on_shards] (sstables_loader&) {
+            sstables_on_shards[this_shard_id()] = {}; // clear on correct shard
+        });
+        co_await coroutine::return_exception_ptr(std::move(ex));
+    }
 }
 
 sstables_loader::sstables_loader(sharded<replica::database>& db,
@@ -551,6 +593,7 @@ future<tasks::task_id> sstables_loader::download_new_sstables(sstring ks_name, s
         throw std::invalid_argument(format("endpoint {} not found", endpoint));
     }
     llog.info("Restore sstables from {}({}) to {}", endpoint, prefix, ks_name);
+
     auto task = co_await _task_manager_module->make_and_start_task<download_task_impl>({}, container(), std::move(endpoint), std::move(bucket), std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables));
     co_return task->id();
 }

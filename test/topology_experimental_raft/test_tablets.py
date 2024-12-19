@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2023-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 from cassandra.query import SimpleStatement, ConsistencyLevel
 
@@ -35,6 +35,10 @@ async def inject_error_one_shot_on(manager, error_name, servers):
 
 async def inject_error_on(manager, error_name, servers):
     errs = [manager.api.enable_injection(s.ip_addr, error_name, False) for s in servers]
+    await asyncio.gather(*errs)
+
+async def disable_injection_on(manager, error_name, servers):
+    errs = [manager.api.disable_injection(s.ip_addr, error_name) for s in servers]
     await asyncio.gather(*errs)
 
 async def repair_on_node(manager: ManagerClient, server: ServerInfo, servers: list[ServerInfo], ranges: str = ''):

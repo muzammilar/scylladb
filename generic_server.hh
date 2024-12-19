@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -118,7 +118,7 @@ protected:
 
     virtual future<> unadvertise_connection(shared_ptr<connection> conn);
 
-    future<> for_each_gently(noncopyable_function<future<>(connection&)>);
+    future<> for_each_gently(noncopyable_function<void(connection&)>);
 };
 
 }

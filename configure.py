@@ -5,7 +5,7 @@
 #
 
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 
 import argparse
@@ -1288,7 +1288,7 @@ idls = ['idl/gossip_digest.idl.hh',
         'idl/streaming.idl.hh',
         'idl/paging_state.idl.hh',
         'idl/frozen_schema.idl.hh',
-        'idl/partition_checksum.idl.hh',
+        'idl/repair.idl.hh',
         'idl/replay_position.idl.hh',
         'idl/mutation.idl.hh',
         'idl/query.idl.hh',
@@ -1316,6 +1316,7 @@ idls = ['idl/gossip_digest.idl.hh',
         'idl/utils.idl.hh',
         'idl/gossip.idl.hh',
         'idl/migration_manager.idl.hh',
+        "idl/node_ops.idl.hh",
 
         ]
 
@@ -1708,7 +1709,7 @@ def configure_seastar(build_dir, mode, mode_config):
         '-DSeastar_UNUSED_RESULT_ERROR=ON',
         '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
         '-DSeastar_SCHEDULING_GROUPS_COUNT=16',
-        '-DSeastar_IO_URING=OFF', # io_uring backend is not stable enough
+        '-DSeastar_IO_URING=ON',
     ]
 
     if args.stack_guards is not None:

@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -30,9 +30,9 @@ template <ContiguousSharedBuffer Buffer>
 class clustering_parser {
     using FragmentedBuffer = basic_fragmented_buffer<Buffer>;
     const schema& _s;
-    column_values_fixed_lengths _clustering_values_fixed_lengths;
+    const column_values_fixed_lengths& _clustering_values_fixed_lengths;
     bool _parsing_start_key;
-    boost::iterator_range<column_values_fixed_lengths::const_iterator> ck_range;
+    std::ranges::subrange<column_values_fixed_lengths::const_iterator> ck_range;
 
     std::vector<FragmentedBuffer> clustering_key_values;
     bound_kind_m kind{};
@@ -65,7 +65,7 @@ class clustering_parser {
     bool no_more_ck_blocks() const { return ck_range.empty(); }
 
     void move_to_next_ck_block() {
-        ck_range.advance_begin(1);
+        ck_range.advance(1);
         ++ck_blocks_header_offset;
         if (ck_blocks_header_offset == 32u) {
             ck_blocks_header_offset = 0u;
@@ -95,9 +95,9 @@ class clustering_parser {
 public:
     using read_status = data_consumer::read_status;
 
-    clustering_parser(const schema& s, reader_permit permit, column_values_fixed_lengths cvfl, bool parsing_start_key)
+    clustering_parser(const schema& s, reader_permit permit, const column_values_fixed_lengths& cvfl, bool parsing_start_key)
         : _s(s)
-        , _clustering_values_fixed_lengths(std::move(cvfl))
+        , _clustering_values_fixed_lengths(cvfl)
         , _parsing_start_key(parsing_start_key)
         , _primitive(std::move(permit))
     { }
@@ -120,7 +120,7 @@ public:
         case state::CLUSTERING_START:
             clustering_key_values.clear();
             clustering_key_values.reserve(_clustering_values_fixed_lengths.size());
-            ck_range = boost::make_iterator_range(_clustering_values_fixed_lengths);
+            ck_range = std::ranges::subrange(_clustering_values_fixed_lengths);
             ck_blocks_header_offset = 0u;
             if (_primitive.read_8(data) != read_status::ready) {
                 _state = state::CK_KIND;
@@ -140,7 +140,9 @@ public:
             [[fallthrough]];
         case state::CK_SIZE:
             if (_primitive._u16 < _s.clustering_key_size()) {
-                ck_range.drop_back(_s.clustering_key_size() - _primitive._u16);
+                auto num_to_drop = _s.clustering_key_size() - _primitive._u16;
+                ck_range = std::ranges::subrange(ck_range.begin(),
+                                                 ck_range.end() - num_to_drop);
             }
             [[fallthrough]];
         case state::CK_BLOCK:
@@ -237,8 +239,8 @@ class promoted_index_block_parser {
 public:
     using read_status = data_consumer::read_status;
 
-    promoted_index_block_parser(const schema& s, reader_permit permit, column_values_fixed_lengths cvfl)
-        : _clustering(s, permit, std::move(cvfl), true)
+    promoted_index_block_parser(const schema& s, reader_permit permit, const column_values_fixed_lengths& cvfl)
+        : _clustering(s, permit, cvfl, true)
         , _primitive(permit)
     { }
 

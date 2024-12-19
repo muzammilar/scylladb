@@ -5,7 +5,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
 #include <chrono>
@@ -2438,10 +2438,10 @@ view_builder::view_build_statuses(sstring keyspace, sstring view_name) const {
     std::unordered_map<locator::host_id, sstring> status = co_await view_status(std::move(keyspace), std::move(view_name));
     std::unordered_map<sstring, sstring> status_map;
     const auto& topo = _db.get_token_metadata().get_topology();
-    topo.for_each_node([&] (const locator::node *node) {
-        auto it = status.find(node->host_id());
+    topo.for_each_node([&] (const locator::node& node) {
+        auto it = status.find(node.host_id());
         auto s = it != status.end() ? std::move(it->second) : "UNKNOWN";
-        status_map.emplace(fmt::to_string(node->endpoint()), std::move(s));
+        status_map.emplace(fmt::to_string(node.endpoint()), std::move(s));
     });
     co_return status_map;
 }
@@ -3286,12 +3286,12 @@ void delete_ghost_rows_visitor::accept_new_row(const clustering_key& ck, const q
 }
 
 std::chrono::microseconds calculate_view_update_throttling_delay(db::view::update_backlog backlog,
-                                                                 db::timeout_clock::time_point timeout) {
-    constexpr auto delay_limit_us = 1000000;
+                                                                 db::timeout_clock::time_point timeout,
+                                                                 uint32_t view_flow_control_delay_limit_in_ms) {
     auto adjust = [] (float x) { return x * x * x; };
     auto budget = std::max(service::storage_proxy::clock_type::duration(0),
         timeout - service::storage_proxy::clock_type::now());
-    std::chrono::microseconds ret(uint32_t(adjust(backlog.relative_size()) * delay_limit_us));
+    std::chrono::microseconds ret(uint32_t(adjust(backlog.relative_size()) * view_flow_control_delay_limit_in_ms * 1000));
     // "budget" has millisecond resolution and can potentially be long
     // in the future so converting it to microseconds may overflow.
     // So to compare buget and ret we need to convert both to the lower

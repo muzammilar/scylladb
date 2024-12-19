@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 
@@ -33,8 +33,6 @@
 #include "auth/authenticated_user.hh"
 
 #include "db/config.hh"
-
-#include "utils/fmt-compat.hh"
 
 cql_test_config auth_on(bool with_authorizer = true) {
     cql_test_config cfg;
