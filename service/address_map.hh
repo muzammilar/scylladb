@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 #pragma once
 
@@ -35,7 +35,7 @@ namespace service {
 extern seastar::logger rslog;
 
 // This class provides an abstraction of expirable server address mappings
-// used by the messaging service and raft rpc module to store host id to ip maping
+// used by the messaging service and raft rpc module to store host id to ip mapping
 template <typename Clock>
 class address_map_t : public peering_sharded_service<address_map_t<Clock>> {
     // Expiring mappings stay in the cache for 1 hour (if not accessed during this time period)

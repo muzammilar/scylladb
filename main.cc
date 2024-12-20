@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include <algorithm>
@@ -662,7 +662,7 @@ static int scylla_main(int ac, char** av) {
   try {
     runtime::init_uptime();
     std::setvbuf(stdout, nullptr, _IOLBF, 1000);
-    app_template::config app_cfg;
+    app_template::seastar_options app_cfg;
     app_cfg.name = "Scylla";
     app_cfg.description =
 R"(scylla - NoSQL data store using the seastar framework
@@ -677,17 +677,38 @@ For more information about individual tools, run: scylla {tool_name} --help
 
 To start the scylla server proper, simply invoke as: scylla server (or just scylla).
 )";
-    app_cfg.default_task_quota = 500us;
 #ifdef DEBUG
     // Increase the task quota to improve work:poll ratio in slow debug mode.
-    app_cfg.default_task_quota = 5ms;
+    app_cfg.reactor_opts.task_quota_ms.set_default_value(5);
+#else
+    app_cfg.reactor_opts.task_quota_ms.set_default_value(0.5);
 #endif
     app_cfg.auto_handle_sigint_sigterm = false;
-    app_cfg.max_networking_aio_io_control_blocks = 50000;
+    app_cfg.reactor_opts.max_networking_io_control_blocks.set_default_value(50000);
+    {
+        const auto candidates = app_cfg.reactor_opts.reactor_backend.get_candidate_names();
+
+        // We don't want ScyllaDB to run with the io_uring backend.
+        // So select the default reactor backend explicitly here.
+        if (std::ranges::contains(candidates, "linux-aio")) {
+            app_cfg.reactor_opts.reactor_backend.select_default_candidate("linux-aio");
+        } else {
+            app_cfg.reactor_opts.reactor_backend.select_default_candidate("epoll");
+        }
+
+        // Leave some reserve IOCBs for scylla-nodetool and other native tool apps.
+        if (std::ranges::contains(candidates, "io_uring")) {
+            app_cfg.reactor_opts.reserve_io_control_blocks.set_default_value(10);
+        } else {
+            startlog.warn("Need to leave extra IOCBs in reserve for tools because the io_uring reactor backend is not available."
+                    " Tools will fall-back to the epoll reactor backend, which requires more IOCBs to function.");
+            app_cfg.reactor_opts.reserve_io_control_blocks.set_default_value(1024);
+        }
+    }
     // We need to have the entire app config to run the app, but we need to
     // run the app to read the config file with UDF specific options so that
     // we know whether we need to reserve additional memory for UDFs.
-    app_cfg.reserve_additional_memory_per_shard = db::config::wasm_udf_reserved_memory;
+    app_cfg.smp_opts.reserve_additional_memory_per_shard = db::config::wasm_udf_reserved_memory;
     app_template app(std::move(app_cfg));
 
     auto ext = std::make_shared<db::extensions>();
@@ -1790,7 +1811,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             static seastar::sharded<memory_threshold_guard> mtg;
             mtg.start(cfg->large_memory_allocation_warning_threshold()).get();
             supervisor::notify("initializing storage proxy RPC verbs");
-            proxy.invoke_on_all(&service::storage_proxy::start_remote, std::ref(messaging), std::ref(gossiper), std::ref(mm), std::ref(sys_ks)).get();
+            proxy.invoke_on_all(&service::storage_proxy::start_remote, std::ref(messaging), std::ref(gossiper), std::ref(mm), std::ref(sys_ks), std::ref(group0_client), std::ref(tsm)).get();
             auto stop_proxy_handlers = defer_verbose_shutdown("storage proxy RPC verbs", [&proxy] {
                 proxy.invoke_on_all(&service::storage_proxy::stop_remote).get();
             });
@@ -2091,6 +2112,11 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             auto stop_authorization_cache_api = defer_verbose_shutdown("authorization cache api", [&ctx] {
                 api::unset_server_authorization_cache(ctx).get();
             });
+
+            // update the service level cache after the SL data accessor and auth service are initialized.
+            if (sl_controller.local().is_v2()) {
+                sl_controller.local().update_cache(qos::update_both_cache_levels::yes).get();
+            }
 
             sl_controller.invoke_on_all([&lifecycle_notifier] (qos::service_level_controller& controller) {
                 lifecycle_notifier.local().register_subscriber(&controller);

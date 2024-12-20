@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include <fmt/std.h>
@@ -16,7 +16,6 @@
 #include "sstables/exceptions.hh"
 #include "sstables/open_info.hh"
 #include "utils/disk-error-handler.hh"
-#include "utils/fmt-compat.hh"
 #include "utils/lister.hh"
 
 namespace utils {

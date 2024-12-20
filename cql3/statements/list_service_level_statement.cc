@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include "seastarx.hh"
@@ -54,7 +54,7 @@ list_service_level_statement::execute(query_processor& qp,
 
     return make_ready_future().then([this, &state] () {
                                   if (_describe_all) {
-                                      return state.get_service_level_controller().get_distributed_service_levels();
+                                      return state.get_service_level_controller().get_distributed_service_levels(qos::query_context::user);
                                   } else {
                                       return state.get_service_level_controller().get_distributed_service_level(_service_level);
                                   }

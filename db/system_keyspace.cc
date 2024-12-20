@@ -4,7 +4,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
 #include <boost/range/algorithm.hpp>
@@ -283,6 +283,7 @@ schema_ptr system_keyspace::topology_requests() {
             .with_column("done", boolean_type)
             .with_column("error", utf8_type)
             .with_column("end_time", timestamp_type)
+            .with_column("truncate_table_id", uuid_type)
             .set_comment("Topology request tracking")
             .with_hash_version()
             .build();
@@ -3387,6 +3388,9 @@ system_keyspace::topology_requests_entry system_keyspace::topology_request_row_t
     }
     if (row.has("end_time")) {
         entry.end_time = row.get_as<db_clock::time_point>("end_time");
+    }
+    if (row.has("truncate_table_id")) {
+        entry.truncate_table_id = table_id(row.get_as<utils::UUID>("truncate_table_id"));
     }
     return entry;
 }

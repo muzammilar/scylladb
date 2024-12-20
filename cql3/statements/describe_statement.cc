@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 #include <algorithm>
 #include <iterator>
@@ -18,7 +18,7 @@
 #include "exceptions/exceptions.hh"
 #include <seastar/core/on_internal_error.hh>
 #include <seastar/coroutine/maybe_yield.hh>
-#include "seastar/coroutine/exception.hh"
+#include <seastar/coroutine/exception.hh>
 #include "service/client_state.hh"
 #include "types/types.hh"
 #include "cql3/query_processor.hh"

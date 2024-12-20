@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #pragma once
@@ -82,5 +82,6 @@ public:
 // See: https://www.scylladb.com/2018/12/04/worry-free-ingestion-flow-control/
 std::chrono::microseconds calculate_view_update_throttling_delay(
     update_backlog backlog,
-    db::timeout_clock::time_point timeout);
+    db::timeout_clock::time_point timeout,
+    uint32_t view_flow_control_delay_limit_in_ms);
 }

@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2024-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 import asyncio
 import pytest
@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 @pytest.mark.asyncio
 @skip_mode('release', 'error injections are not supported in release mode')
 async def test_mv_topology_change(manager: ManagerClient):
-    cfg = {'force_gossip_topology_changes': True, 'error_injections_at_startup': ['delay_before_get_view_natural_endpoint']}
+    cfg = {'force_gossip_topology_changes': True,
+           'enable_tablets': False,
+           'error_injections_at_startup': ['delay_before_get_view_natural_endpoint']}
 
     servers = [await manager.server_add(config=cfg, timeout=60) for _ in range(3)]
 

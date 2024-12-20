@@ -5,7 +5,7 @@
  */
 
 /*
- * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
+ * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
 #pragma once
@@ -107,7 +107,7 @@ public:
     future<> submit_migration_task(locator::host_id endpoint, bool can_ignore_down_node = true);
 
     // Makes sure that this node knows about all schema changes known by "nodes" that were made prior to this call.
-    future<> sync_schema(const replica::database& db, const std::vector<gms::inet_address>& nodes);
+    future<> sync_schema(const replica::database& db, const std::vector<locator::host_id>& nodes);
 
     // Fetches schema from remote node and applies it locally.
     // Differs from submit_migration_task() in that all errors are propagated.

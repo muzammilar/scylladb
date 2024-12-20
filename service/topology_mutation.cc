@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include "utils/assert.hh"
@@ -311,6 +311,11 @@ topology_request_tracking_mutation_builder& topology_request_tracking_mutation_b
         set("error", *error);
     }
     return set("done", true);
+}
+
+topology_request_tracking_mutation_builder& topology_request_tracking_mutation_builder::set_truncate_table_data(const table_id& table_id) {
+    apply_atomic("truncate_table_id", table_id.uuid());
+    return *this;
 }
 
 template class topology_mutation_builder_base<topology_mutation_builder>;

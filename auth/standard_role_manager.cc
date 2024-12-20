@@ -3,7 +3,7 @@
  */
 
 /*
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
 #include "auth/standard_role_manager.hh"
@@ -30,8 +30,8 @@
 #include "db/consistency_level_type.hh"
 #include "exceptions/exceptions.hh"
 #include "utils/log.hh"
-#include "seastar/core/loop.hh"
-#include "seastar/coroutine/maybe_yield.hh"
+#include <seastar/core/loop.hh>
+#include <seastar/coroutine/maybe_yield.hh>
 #include "service/raft/raft_group0_client.hh"
 #include "utils/class_registrator.hh"
 #include "service/migration_manager.hh"

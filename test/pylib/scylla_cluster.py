@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2022-present ScyllaDB
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
 #
 """Scylla clusters for testing.
    Provides helpers to setup and manage clusters of Scylla servers for testing.
@@ -714,8 +714,7 @@ class ScyllaServer:
         else:
             await self.cmd.wait()
         finally:
-            if self.cmd:
-                self.logger.info("stopped %s in %s", self, self.workdir.name)
+            self.logger.info("stopped %s in %s", self, self.workdir.name)
             self.cmd = None
 
     @stop_event
@@ -1497,7 +1496,6 @@ class ScyllaClusterManager:
         # make ScyllaClusterManager not operatable from client side
         self.logger.error(" %s, test case {test} BROKE ScyllaClusterManager", reason)
         self.server_broken_event.set()
-        self._mark_dirty(None)
 
     async def _mark_dirty(self, _request) -> None:
         """Mark current cluster dirty"""
@@ -1599,20 +1597,22 @@ class ScyllaClusterManager:
                         f"removenode failed (initiator: {initiator}, to_remove: {to_remove},"
                         f" ignore_dead: {ignore_dead}) but did not contain expected error (\"{expected_error}\"),"
                         f"check log file at {initiator.log_filename}, error: \"{exc}\"")
+                else:
+                    self.logger.info(f"removenode (initiator: {initiator}, to_remove: {to_remove}, ignore_dead: {ignore_dead})"
+                                     f" failed as expected: {exc}")
             else:
                 raise RuntimeError(
                     f"removenode failed (initiator: {initiator}, to_remove: {to_remove},"
                     f" ignore_dead: {ignore_dead}), check log file at {initiator.log_filename},"
                     f" error: \"{exc}\"")
         else:
+            self.cluster.server_mark_removed(server_id)
             if expected_error:
-                self.cluster.server_mark_removed(server_id)
                 raise RuntimeError(
                     f"removenode succeeded when it should have failed (initiator: {initiator},"
                     f"to_remove: {to_remove}, ignore_dead: {ignore_dead}, expected error: \"{expected_error}\"),"
                     f" check log file at {initiator.log_filename}")
-
-        self.cluster.server_mark_removed(server_id)
+            self.logger.info(f"removenode (initiator: {initiator}, to_remove: {to_remove}, ignore_dead: {ignore_dead}) succeeded")
 
     async def _cluster_decommission_node(self, request) -> None:
         """Run decommission node on Scylla REST API for a specified server"""
